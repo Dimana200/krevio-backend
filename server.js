@@ -1,16 +1,10 @@
 import express from "express";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import cors from "cors";
-import busboy from "busboy";
 
 const app = express();
 
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "PUT", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
-
+app.use(cors({ origin: "*" }));
 app.options("*", cors());
 
 const s3 = new S3Client({
@@ -27,35 +21,27 @@ app.get("/", (req, res) => {
 });
 
 app.post("/upload", (req, res) => {
-  const bb = busboy({ headers: req.headers });
-  let fileBuffer = [];
-  let fileName = "";
-  let fileMime = "";
+  const chunks = [];
+  let fileName = "upload-" + Date.now() + ".mp4";
+  let contentType = req.headers["content-type"] || "video/mp4";
 
-  bb.on("file", (name, file, info) => {
-    fileMime = info.mimeType;
-    fileName = Date.now() + "-" + info.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
-    file.on("data", (data) => fileBuffer.push(data));
-  });
-
-  bb.on("close", async () => {
+  req.on("data", chunk => chunks.push(chunk));
+  req.on("end", async () => {
     try {
-      const buffer = Buffer.concat(fileBuffer);
+      const buffer = Buffer.concat(chunks);
       await s3.send(new PutObjectCommand({
         Bucket: process.env.R2_BUCKET,
         Key: fileName,
         Body: buffer,
-        ContentType: fileMime
+        ContentType: contentType
       }));
       const fileUrl = `${process.env.R2_PUBLIC_URL}/${fileName}`;
-      res.json({ url: fileUrl, key: fileName });
+      res.json({ url: fileUrl });
     } catch (err) {
-      console.error("Upload error:", err);
+      console.error(err);
       res.status(500).json({ error: "Качването се провали" });
     }
   });
-
-  req.pipe(bb);
 });
 
 const PORT = process.env.PORT || 8080;
