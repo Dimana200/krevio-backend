@@ -1,7 +1,7 @@
 import express from "express";
-import multer from "multer";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import cors from "cors";
+import busboy from "busboy";
 
 const app = express();
 
@@ -12,10 +12,6 @@ app.use(cors({
 }));
 
 app.options("*", cors());
-
-const upload = multer({
-  storage: multer.memoryStorage()
-});
 
 const s3 = new S3Client({
   region: "auto",
@@ -30,24 +26,36 @@ app.get("/", (req, res) => {
   res.json({ status: "OK", message: "Krevio backend работи" });
 });
 
-app.post("/upload", upload.single("file"), async (req, res) => {
-  try {
-    if (!req.file) {
-      return res.status(400).json({ error: "Няма файл" });
+app.post("/upload", (req, res) => {
+  const bb = busboy({ headers: req.headers });
+  let fileBuffer = [];
+  let fileName = "";
+  let fileMime = "";
+
+  bb.on("file", (name, file, info) => {
+    fileMime = info.mimeType;
+    fileName = Date.now() + "-" + info.filename.replace(/[^a-zA-Z0-9._-]/g, "_");
+    file.on("data", (data) => fileBuffer.push(data));
+  });
+
+  bb.on("close", async () => {
+    try {
+      const buffer = Buffer.concat(fileBuffer);
+      await s3.send(new PutObjectCommand({
+        Bucket: process.env.R2_BUCKET,
+        Key: fileName,
+        Body: buffer,
+        ContentType: fileMime
+      }));
+      const fileUrl = `${process.env.R2_PUBLIC_URL}/${fileName}`;
+      res.json({ url: fileUrl, key: fileName });
+    } catch (err) {
+      console.error("Upload error:", err);
+      res.status(500).json({ error: "Качването се провали" });
     }
-    const fileName = Date.now() + "-" + req.file.originalname.replace(/[^a-zA-Z0-9._-]/g, "_");
-    await s3.send(new PutObjectCommand({
-      Bucket: process.env.R2_BUCKET,
-      Key: fileName,
-      Body: req.file.buffer,
-      ContentType: req.file.mimetype
-    }));
-    const fileUrl = `${process.env.R2_PUBLIC_URL}/${fileName}`;
-    res.json({ url: fileUrl, key: fileName });
-  } catch (err) {
-    console.error("Upload error:", err);
-    res.status(500).json({ error: "Качването се провали" });
-  }
+  });
+
+  req.pipe(bb);
 });
 
 const PORT = process.env.PORT || 8080;
