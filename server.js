@@ -18,6 +18,11 @@ app.use((req, res, next) => {
 
 const sb = createClient(
   process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_KEY
+);
+
+const sbAuth = createClient(
+  process.env.SUPABASE_URL,
   process.env.SUPABASE_ANON
 );
 
@@ -33,7 +38,7 @@ const s3 = new S3Client({
 const BUCKET = process.env.R2_BUCKET;
 
 app.get("/", (req, res) => {
-  res.json({ status: "Krevio Backend OK", version: "5.0" });
+  res.json({ status: "Krevio Backend OK", version: "6.0" });
 });
 
 app.post("/presign", async (req, res) => {
@@ -44,7 +49,7 @@ app.post("/presign", async (req, res) => {
   if (!token) return res.status(401).json({ error: "Не си влязъл." });
 
   try {
-    const { data, error } = await sb.auth.getUser(token);
+    const { data, error } = await sbAuth.auth.getUser(token);
     if (error || !data?.user) {
       console.log("Auth failed:", error?.message);
       return res.status(401).json({ error: "Невалиден токен." });
@@ -70,13 +75,19 @@ app.post("/presign", async (req, res) => {
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
     const fileUrl   = `${process.env.R2_PUBLIC_URL}/${key}`;
 
-    await sb.from("videos").insert({
+    const { error: dbError } = await sb.from("videos").insert({
       user_id:      user.id,
       title:        title,
       description:  description || "",
       file_url:     fileUrl,
       access_level: access || "free",
     });
+
+    if (dbError) {
+      console.log("DB error:", dbError.message);
+    } else {
+      console.log("DB insert OK");
+    }
 
     console.log("Success:", key);
     res.json({ uploadUrl, fileUrl, key });
@@ -88,5 +99,5 @@ app.post("/presign", async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Krevio Backend v5.0 on port ${PORT}`);
+  console.log(`Krevio Backend v6.0 on port ${PORT}`);
 });
