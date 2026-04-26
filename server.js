@@ -1,18 +1,19 @@
 import express from "express";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createClient } from "@supabase/supabase-js";
 import { exec } from "child_process";
 import { promisify } from "util";
 import fs from "fs";
 import path from "path";
-import multer from "multer";
+import https from "https";
 
 const execAsync = promisify(exec);
-const app = express();
+const app  = express();
 const PORT = process.env.PORT || 3000;
-const upload = multer({ dest: "/tmp/" });
 
 app.use(express.json());
+
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS");
@@ -35,72 +36,61 @@ const s3 = new S3Client({
 
 const BUCKET = process.env.R2_BUCKET;
 
-async function generateThumbnail(videoPath, userId, videoKey) {
-  const thumbPath = path.join("/tmp", `thumb_${Date.now()}.jpg`);
-  try {
-    await execAsync(`ffmpeg -i "${videoPath}" -ss 00:00:01 -vframes 1 -vf "scale=480:-1" -q:v 2 "${thumbPath}" -y`);
-    const thumbKey = `thumbnails/${userId}/${path.basename(videoKey, path.extname(videoKey))}.jpg`;
-    const thumbBuffer = fs.readFileSync(thumbPath);
-    await s3.send(new PutObjectCommand({
-      Bucket: BUCKET, Key: thumbKey, Body: thumbBuffer, ContentType: "image/jpeg",
-    }));
-    return `${process.env.R2_PUBLIC_URL}/${thumbKey}`;
-  } catch(e) {
-    console.error("Thumbnail failed:", e.message);
-    return null;
-  } finally {
-    try { fs.unlinkSync(thumbPath); } catch(e) {}
-  }
-}
+app.get("/", (req, res) => {
+  res.json({ status: "Krevio Backend OK", version: "7.0" });
+});
 
-app.get("/", (req, res) => res.json({ status: "Krevio Backend OK", version: "8.0" }));
+app.post("/presign", async (req, res) => {
+  console.log("=== PRESIGN HIT ===");
 
-app.post("/upload", upload.single("video"), async (req, res) => {
-  console.log("=== UPLOAD HIT ===");
   const token = req.headers.authorization?.replace("Bearer ", "");
   if (!token) return res.status(401).json({ error: "Не си влязъл." });
 
   try {
     const { data, error } = await sbAuth.auth.getUser(token);
-    if (error || !data?.user) return res.status(401).json({ error: "Невалиден токен." });
+    if (error || !data?.user) {
+      return res.status(401).json({ error: "Невалиден токен." });
+    }
 
     const user = data.user;
-    const { title, description, access } = req.body;
-    if (!req.file || !title) return res.status(400).json({ error: "Липсват данни." });
+    const { fileName, mimeType, title, description, access } = req.body;
 
-    const ext = req.file.originalname.split(".").pop();
+    if (!fileName || !mimeType || !title) {
+      return res.status(400).json({ error: "Липсват данни." });
+    }
+
+    const ext = fileName.split(".").pop();
     const key = `videos/${user.id}/${Date.now()}.${ext}`;
-    const fileBuffer = fs.readFileSync(req.file.path);
 
-    await s3.send(new PutObjectCommand({
-      Bucket: BUCKET, Key: key, Body: fileBuffer, ContentType: req.file.mimetype,
-    }));
+    const command = new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      ContentType: mimeType,
+    });
 
+    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
     const fileUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
 
     const { error: dbError } = await sb.from("videos").insert({
-      user_id: user.id, title, description: description || "",
-      file_url: fileUrl, access_level: access || "free", thumbnail_url: null,
+      user_id: user.id,
+      title: title,
+      description: description || "",
+      file_url: fileUrl,
+      access_level: access || "free",
+      thumbnail_url: null,
     });
-    if (dbError) console.error("DB error:", dbError.message);
+
+    if (dbError) console.log("DB error:", dbError.message);
     else console.log("DB insert OK");
 
-    res.json({ fileUrl });
-
-    // Thumbnail асинхронно
-    setTimeout(async () => {
-      const thumbUrl = await generateThumbnail(req.file.path, user.id, key);
-      if (thumbUrl) {
-        await sb.from("videos").update({ thumbnail_url: thumbUrl }).eq("file_url", fileUrl);
-        console.log("Thumbnail saved:", thumbUrl);
-      }
-      try { fs.unlinkSync(req.file.path); } catch(e) {}
-    }, 1000);
+    res.json({ uploadUrl, fileUrl, key });
 
   } catch(e) {
-    console.error("Error:", e.message);
+    console.log("Error:", e.message);
     res.status(500).json({ error: "Сървърна грешка." });
   }
 });
 
-app.listen(PORT, () => console.log(`Krevio Backend v8.0 on port ${PORT}`));
+app.listen(PORT, () => {
+  console.log(`Krevio Backend v7.0 on port ${PORT}`);
+});
