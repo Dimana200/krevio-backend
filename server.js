@@ -1,19 +1,15 @@
 import express from "express";
-import { S3Client, PutObjectCommand, GetObjectCommand } from "@aws-sdk/client-s3";
-import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { createClient } from "@supabase/supabase-js";
-import { exec } from "child_process";
-import { promisify } from "util";
+import multer from "multer";
 import fs from "fs";
 import path from "path";
-import https from "https";
 
-const execAsync = promisify(exec);
-const app  = express();
+const app = express();
 const PORT = process.env.PORT || 3000;
+const upload = multer({ dest: "/tmp/", limits: { fileSize: 4 * 1024 * 1024 * 1024 } });
 
 app.use(express.json());
-
 app.use((req, res, next) => {
   res.header("Access-Control-Allow-Origin", "*");
   res.header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS");
@@ -36,40 +32,38 @@ const s3 = new S3Client({
 
 const BUCKET = process.env.R2_BUCKET;
 
-app.get("/", (req, res) => {
-  res.json({ status: "Krevio Backend OK", version: "7.0" });
-});
+app.get("/", (req, res) => res.json({ status: "Krevio Backend OK", version: "8.0" }));
 
-app.post("/presign", async (req, res) => {
-  console.log("=== PRESIGN HIT ===");
-
+app.post("/upload", upload.single("video"), async (req, res) => {
+  console.log("=== UPLOAD HIT ===");
   const token = req.headers.authorization?.replace("Bearer ", "");
   if (!token) return res.status(401).json({ error: "Не си влязъл." });
 
   try {
     const { data, error } = await sbAuth.auth.getUser(token);
-    if (error || !data?.user) {
-      return res.status(401).json({ error: "Невалиден токен." });
-    }
+    if (error || !data?.user) return res.status(401).json({ error: "Невалиден токен." });
 
     const user = data.user;
-    const { fileName, mimeType, title, description, access } = req.body;
+    const { title, description, access } = req.body;
+    if (!req.file) return res.status(400).json({ error: "Няма файл." });
+    if (!title) return res.status(400).json({ error: "Няма заглавие." });
 
-    if (!fileName || !mimeType || !title) {
-      return res.status(400).json({ error: "Липсват данни." });
-    }
+    console.log("File received:", req.file.originalname, req.file.size);
 
-    const ext = fileName.split(".").pop();
+    const ext = req.file.originalname.split(".").pop() || "mp4";
     const key = `videos/${user.id}/${Date.now()}.${ext}`;
+    const fileBuffer = fs.readFileSync(req.file.path);
 
-    const command = new PutObjectCommand({
+    console.log("Uploading to R2...");
+    await s3.send(new PutObjectCommand({
       Bucket: BUCKET,
       Key: key,
-      ContentType: mimeType,
-    });
+      Body: fileBuffer,
+      ContentType: req.file.mimetype || "video/mp4",
+    }));
 
-    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
     const fileUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
+    console.log("R2 upload OK:", fileUrl);
 
     const { error: dbError } = await sb.from("videos").insert({
       user_id: user.id,
@@ -80,17 +74,18 @@ app.post("/presign", async (req, res) => {
       thumbnail_url: null,
     });
 
-    if (dbError) console.log("DB error:", dbError.message);
+    if (dbError) console.error("DB error:", dbError.message);
     else console.log("DB insert OK");
 
-    res.json({ uploadUrl, fileUrl, key });
+    try { fs.unlinkSync(req.file.path); } catch(e) {}
+
+    res.json({ fileUrl });
 
   } catch(e) {
-    console.log("Error:", e.message);
-    res.status(500).json({ error: "Сървърна грешка." });
+    console.error("Upload error:", e.message);
+    try { if(req.file) fs.unlinkSync(req.file.path); } catch(e2) {}
+    res.status(500).json({ error: "Сървърна грешка: " + e.message });
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Krevio Backend v7.0 on port ${PORT}`);
-});
+app.listen(PORT, () => console.log(`Krevio Backend v8.0 on port ${PORT}`));
