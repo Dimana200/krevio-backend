@@ -2,6 +2,7 @@ import express from "express";
 import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createClient } from "@supabase/supabase-js";
+import busboy from "busboy";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -29,7 +30,7 @@ const s3 = new S3Client({
 
 const BUCKET = process.env.R2_BUCKET;
 
-app.get("/", (req, res) => res.json({ status: "Krevio Backend OK", version: "9.0" }));
+app.get("/", (req, res) => res.json({ status: "Krevio Backend OK", version: "10.0" }));
 
 app.post("/presign", async (req, res) => {
   console.log("=== PRESIGN HIT ===");
@@ -43,20 +44,11 @@ app.post("/presign", async (req, res) => {
     if (!fileName || !mimeType || !title) return res.status(400).json({ error: "Липсват данни." });
     const ext = fileName.split(".").pop();
     const key = `videos/${user.id}/${Date.now()}.${ext}`;
-    // БЕЗ ContentType в командата — избягва CORS preflight на мобилен
     const command = new PutObjectCommand({ Bucket: BUCKET, Key: key });
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
     const fileUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
-    const { error: dbError } = await sb.from("videos").insert({
-      user_id: user.id,
-      title,
-      description: description || "",
-      file_url: fileUrl,
-      access_level: access || "free",
-      thumbnail_url: null,
-    });
-    if (dbError) console.error("DB error:", dbError.message);
-    else console.log("DB insert OK");
+    await sb.from("videos").insert({ user_id:user.id, title, description:description||"", file_url:fileUrl, access_level:access||"free", thumbnail_url:null });
+    console.log("DB insert OK");
     res.json({ uploadUrl, fileUrl, key });
   } catch(e) {
     console.error("Error:", e.message);
@@ -64,4 +56,61 @@ app.post("/presign", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`Krevio Backend v9.0 on port ${PORT}`));
+app.post("/upload", async (req, res) => {
+  console.log("=== UPLOAD HIT ===");
+  const token = req.headers.authorization?.replace("Bearer ", "");
+  if (!token) return res.status(401).json({ error: "Не си влязъл." });
+  try {
+    const { data, error } = await sbAuth.auth.getUser(token);
+    if (error || !data?.user) return res.status(401).json({ error: "Невалиден токен." });
+    const user = data.user;
+
+    const chunks = [];
+    let title = "", description = "", access = "free", fileName = "video.mp4", mimeType = "video/mp4";
+
+    const bb = busboy({ headers: req.headers, limits: { fileSize: 4 * 1024 * 1024 * 1024 } });
+
+    bb.on("field", (name, val) => {
+      if (name === "title") title = val;
+      if (name === "description") description = val;
+      if (name === "access") access = val;
+    });
+
+    bb.on("file", (name, file, info) => {
+      fileName = info.filename || "video.mp4";
+      mimeType = info.mimeType || "video/mp4";
+      file.on("data", (chunk) => chunks.push(chunk));
+    });
+
+    bb.on("finish", async () => {
+      try {
+        if (!title) return res.status(400).json({ error: "Няма заглавие." });
+        if (chunks.length === 0) return res.status(400).json({ error: "Няма файл." });
+
+        const fileBuffer = Buffer.concat(chunks);
+        const ext = fileName.split(".").pop() || "mp4";
+        const key = `videos/${user.id}/${Date.now()}.${ext}`;
+
+        console.log("Uploading to R2, size:", fileBuffer.length);
+        await s3.send(new PutObjectCommand({
+          Bucket: BUCKET, Key: key,
+          Body: fileBuffer, ContentType: mimeType,
+        }));
+
+        const fileUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
+        await sb.from("videos").insert({ user_id:user.id, title, description:description||"", file_url:fileUrl, access_level:access||"free", thumbnail_url:null });
+        console.log("Upload OK:", fileUrl);
+        res.json({ fileUrl });
+      } catch(e) {
+        console.error("Upload error:", e.message);
+        res.status(500).json({ error: e.message });
+      }
+    });
+
+    req.pipe(bb);
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.listen(PORT, () => console.log(`Krevio Backend v10.0 on port ${PORT}`));
