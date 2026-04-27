@@ -7,11 +7,18 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 app.use(express.json());
+app.options("*", (req, res) => {
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With");
+  res.set("Access-Control-Max-Age", "86400");
+  res.status(204).end();
+});
+
 app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS");
-  res.header("Access-Control-Allow-Headers", "*");
-  if (req.method === "OPTIONS") return res.sendStatus(200);
+  res.set("Access-Control-Allow-Origin", "*");
+  res.set("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS");
+  res.set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With");
   next();
 });
 
