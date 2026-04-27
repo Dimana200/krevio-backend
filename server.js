@@ -14,7 +14,6 @@ app.options("*", (req, res) => {
   res.set("Access-Control-Max-Age", "86400");
   res.status(204).end();
 });
-
 app.use((req, res, next) => {
   res.set("Access-Control-Allow-Origin", "*");
   res.set("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS");
@@ -63,11 +62,9 @@ app.post("/upload", async (req, res) => {
     bb.on("finish", async () => {
       try {
         if (!token) return res.status(401).json({ error: "Не си влязъл." });
-
         const { data, error } = await sbAuth.auth.getUser(token);
         if (error || !data?.user) return res.status(401).json({ error: "Невалиден токен." });
         const user = data.user;
-
         if (!title) return res.status(400).json({ error: "Няма заглавие." });
         if (chunks.length === 0) return res.status(400).json({ error: "Няма файл." });
 
@@ -79,6 +76,7 @@ app.post("/upload", async (req, res) => {
         await s3.send(new PutObjectCommand({
           Bucket: BUCKET, Key: key,
           Body: fileBuffer, ContentType: mimeType,
+          CacheControl: 'public, max-age=31536000',
         }));
 
         const fileUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
