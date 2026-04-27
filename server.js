@@ -43,7 +43,8 @@ app.post("/presign", async (req, res) => {
     if (!fileName || !mimeType || !title) return res.status(400).json({ error: "Липсват данни." });
     const ext = fileName.split(".").pop();
     const key = `videos/${user.id}/${Date.now()}.${ext}`;
-    const command = new PutObjectCommand({ Bucket: BUCKET, Key: key, ContentType: mimeType });
+    // БЕЗ ContentType в командата — избягва CORS preflight на мобилен
+    const command = new PutObjectCommand({ Bucket: BUCKET, Key: key });
     const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
     const fileUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
     const { error: dbError } = await sb.from("videos").insert({
