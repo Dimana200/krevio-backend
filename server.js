@@ -1,5 +1,5 @@
 import express from "express";
-import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { createClient } from "@supabase/supabase-js";
 import busboy from "busboy";
 
@@ -35,7 +35,7 @@ const s3 = new S3Client({
 
 const BUCKET = process.env.R2_BUCKET;
 
-app.get("/", (req, res) => res.json({ status: "Krevio Backend OK", version: "11.0" }));
+app.get("/", (req, res) => res.json({ status: "Krevio Backend OK", version: "12.0" }));
 
 app.post("/upload", async (req, res) => {
   console.log("=== UPLOAD HIT ===");
@@ -76,7 +76,7 @@ app.post("/upload", async (req, res) => {
         await s3.send(new PutObjectCommand({
           Bucket: BUCKET, Key: key,
           Body: fileBuffer, ContentType: mimeType,
-          CacheControl: 'public, max-age=31536000',
+          CacheControl: "public, max-age=31536000",
         }));
 
         const fileUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
@@ -89,16 +89,45 @@ app.post("/upload", async (req, res) => {
         });
         console.log("Upload OK:", fileUrl);
         res.json({ fileUrl });
-      } catch(e) {
+      } catch (e) {
         console.error("Upload error:", e.message);
         res.status(500).json({ error: e.message });
       }
     });
 
     req.pipe(bb);
-  } catch(e) {
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-app.listen(PORT, () => console.log(`Krevio Backend v11.0 on port ${PORT}`));
+app.delete("/delete-video", async (req, res) => {
+  console.log("=== DELETE VIDEO HIT ===");
+  try {
+    const { token, fileUrl, videoId } = req.body;
+    if (!token) return res.status(401).json({ error: "Не си влязъл." });
+
+    const { data, error } = await sbAuth.auth.getUser(token);
+    if (error || !data?.user) return res.status(401).json({ error: "Невалиден токен." });
+    const user = data.user;
+
+    // Изтрий от Supabase
+    const { error: dbErr } = await sb.from("videos")
+      .delete()
+      .eq("id", videoId)
+      .eq("user_id", user.id);
+    if (dbErr) return res.status(500).json({ error: dbErr.message });
+
+    // Изтрий от R2
+    const key = fileUrl.replace(process.env.R2_PUBLIC_URL + "/", "");
+    await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
+
+    console.log("Deleted:", videoId, key);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error("Delete error:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.listen(PORT, () => console.log(`Krevio Backend v12.0 on port ${PORT}`));
