@@ -1,25 +1,18 @@
 import express from "express";
+import cors from "cors";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { createClient } from "@supabase/supabase-js";
 import busboy from "busboy";
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+
+// CORS — трябва да е ПРЕДИ всичко друго
+app.use(cors({ origin: "*", methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"] }));
+app.options("*", cors());
 
 app.use(express.json());
-app.options("*", (req, res) => {
-  res.set("Access-Control-Allow-Origin", "*");
-  res.set("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With");
-  res.set("Access-Control-Max-Age", "86400");
-  res.status(204).end();
-});
-app.use((req, res, next) => {
-  res.set("Access-Control-Allow-Origin", "*");
-  res.set("Access-Control-Allow-Methods", "GET,PUT,POST,DELETE,OPTIONS");
-  res.set("Access-Control-Allow-Headers", "Content-Type,Authorization,X-Requested-With");
-  next();
-});
+
+const PORT = process.env.PORT || 3000;
 
 const sb     = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const sbAuth = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON);
@@ -35,7 +28,7 @@ const s3 = new S3Client({
 
 const BUCKET = process.env.R2_BUCKET;
 
-app.get("/", (req, res) => res.json({ status: "Krevio Backend OK", version: "15.0" }));
+app.get("/", (req, res) => res.json({ status: "Krevio Backend OK", version: "16.0" }));
 
 app.post("/upload", async (req, res) => {
   console.log("=== UPLOAD HIT ===");
@@ -88,7 +81,6 @@ app.post("/upload", async (req, res) => {
         }));
         const fileUrl = `${process.env.R2_PUBLIC_URL}/${key}`;
 
-        // Качи thumbnail ако е изпратен от клиента
         let thumbnailUrl = null;
         if (hasThumb && thumbChunks.length > 0) {
           const thumbBuffer = Buffer.concat(thumbChunks);
@@ -99,7 +91,6 @@ app.post("/upload", async (req, res) => {
             CacheControl: "public, max-age=31536000",
           }));
           thumbnailUrl = `${process.env.R2_PUBLIC_URL}/${thumbKey}`;
-          console.log("Thumbnail uploaded:", thumbnailUrl);
         }
 
         await sb.from("videos").insert({
@@ -125,7 +116,6 @@ app.post("/upload", async (req, res) => {
 });
 
 app.delete("/delete-video", async (req, res) => {
-  console.log("=== DELETE VIDEO HIT ===");
   try {
     const { token, fileUrl, videoId } = req.body;
     if (!token) return res.status(401).json({ error: "Не си влязъл." });
@@ -139,12 +129,10 @@ app.delete("/delete-video", async (req, res) => {
     const key = fileUrl.replace(process.env.R2_PUBLIC_URL + "/", "");
     await s3.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
 
-    console.log("Deleted:", videoId, key);
     res.json({ ok: true });
   } catch(e) {
-    console.error("Delete error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-app.listen(PORT, () => console.log(`Krevio Backend v15.0 on port ${PORT}`));
+app.listen(PORT, () => console.log(`Krevio Backend v16.0 on port ${PORT}`));
